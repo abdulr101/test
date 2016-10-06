@@ -1,0 +1,303 @@
+<?php
+function activation_redirect_init() {
+  drupal_add_js(drupal_get_path('module', 'activation_redirect'). '/stay_touch.js');
+  if(arg(0) ==  'myorg') {
+    drupal_add_js(drupal_get_path('module', 'activation_redirect'). '/script.js');
+  }
+  if(arg(0)== 'myprofile'){
+    drupal_add_js(drupal_get_path('module', 'activation_redirect'). '/script.js');
+  }
+}
+function activation_redirect_menu() {
+  $items = array();
+  $items['ibm_apim/activate/success'] = array(
+    'title' => t('Activation Success'),
+	'page callback' => 'ibm_apim_activate_success',
+	'access callback' => TRUE,
+  );
+  $items['ibm_apim/stay/touch'] = array(
+    'title' => t('Stay in touch callback'),
+	'page callback' => 'ibm_apim_stay_in_touch',
+	'access callback' => TRUE,
+  );
+  $items['ibm_apim/forgot/pass'] = array(
+    'title' => t('Forgot password'),
+	'page callback' => 'ibm_apim_forgot_pass',
+	'access callback' => TRUE,
+  );
+  $items['ibm_apim/org/update'] = array(
+    'title' => t('Org Update callback'),
+	'page callback' => 'ibm_apim_org_update',
+	'access callback' => TRUE,
+  );
+  $items['ibm_apim/invite/user'] = array(
+    'title' => t('Invite new user'),
+	'page callback' => 'ibm_apim_invite_user_callback',
+	'access callback' => TRUE,
+  );
+  $items['ibm_apim/delete/user'] = array(
+    'title' => t('delete existing user'),
+	'page callback' => 'ibm_apim_delete_user_callback',
+	'access callback' => TRUE,
+  );
+  $items['myprofile'] = array(
+    'title' => t('edit user profile'),
+	'page callback' => 'ibm_apim_edit_user_profile_callback',
+	'access callback' => 'user_is_logged_in',
+  );
+$items['ibm_apim/terms'] = array(
+    'title' => t('terms and conditions'),
+	'page callback' => 'ibm_apim_terms_conditions_callback',
+	'access callback' => TRUE,
+  );  
+  return $items;
+}
+function ibm_apim_terms_conditions_callback(){
+return "test";
+}
+function ibm_apim_edit_user_profile_callback(){
+  return theme('ibm_apim_profile', array('form' => NULL));
+} 
+
+function ibm_apim_forgot_pass() {
+  $name = trim($_POST['name']);
+  // Try to load by email.
+  $users = user_load_multiple(array(), array('mail' => $name, 'status' => '1'));
+  $account = reset($users);
+  if (!$account) {
+    $users = user_load_multiple(array(), array('name' => $name, 'status' => '1'));
+    $account = reset($users);
+  }
+  if (isset($account->uid)) {
+    //global $language;
+    //$mail = 'sent';//_user_mail_notify('password_reset', $account, $language);
+	$mail =  _ibm_apim_reset_user_password($account->name);
+	if (!empty($mail)) {
+    watchdog('user', 'Password reset instructions mailed to %name at %email.', array('%name' => $account->name, '%email' => $account->mail));
+      echo drupal_json_output(array('error' => 0, 'message' => 'Further instructions have been sent to your e-mail address.'));
+    }
+  }
+  else {
+    echo drupal_json_output(array('error' => 1, 'message' => 'There is a problem to reset your password.'));
+  }
+}
+
+function ibm_apim_delete_user_callback() {
+	$developer_org = ibm_apim_get_current_developer_org();	
+	$url = '/v1/portal/orgs/' . $developer_org['id'] . '/members/' . $_POST['id'];
+	$result = ibm_apim_delete($url);
+	echo drupal_json_output($result);
+ 
+}
+
+function ibm_apim_org_update() {
+  $name = $_POST['name'];
+  $org = ibm_apim_get_current_developer_org();
+  /*$members = _ibm_apim_get_members($org['id']);
+  print '<pre>';
+  print_r($members);exit;*/
+  $result = ibm_apim_call('/v1/portal/orgs/' . $developerOrg);
+  if (isset($result) && isset($result->data) && !isset($result->data['errors'])) {
+    $org_data = $result->data;
+  }
+  if($name && $name != $org_data['name']) {
+    $result = ibm_apim_update_org_name($org['id'], $name);
+    
+    if (isset($result) && ($result->code == 200 && $result->code < 300)) {
+      drupal_set_message(t('Organization name updated.'));
+      $apim_session = &_ibm_apim_get_apim_session();
+      unset($apim_session['developer_organizations']);
+      // clear block cache
+      cache_clear_all(NULL, 'cache_block');
+      _ibm_apim_refresh_user_data();
+      _ibm_apim_set_current_developer_org($orgid);
+    }
+  }
+  echo drupal_json_output(array('name' => $name, 'org' => $org));
+}
+function ibm_apim_invite_user_callback() {
+  $email = $_POST['name'];
+  $role = $_POST['role'];
+  
+  $error = 0;
+  if(filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+	$error = 1;
+  }else {
+    $org = ibm_apim_get_current_developer_org();
+    $developerOrgs = $org['id'];
+    $url = '/v1/portal/orgs/' . $developerOrgs . '/members';
+    $result = ibm_apim_call($url);
+    if (isset($result) && $result->code >= 200 && $result->code < 300) {
+      $data = array("emailURLSuffix" => "?q=ibm_apim/activate/x", "name" => $email);
+      $data["roles"] = array($role);
+     
+      $add_member_result = ibm_apim_post($url, json_encode($data));
+      if (isset($add_member_result) && $add_member_result->code >= 200 && $add_member_result->code < 300) {
+        drupal_set_message(t('Invite sent successfully.'));
+      }
+    }    
+  
+  }  
+  
+  echo drupal_json_output(array('error' => $error, 'result' => $result, 'member' => $add_member_result));
+}
+function activation_redirect_menu_alter(&$items) {
+  $items['myorg']['page callback'] = 'my_custom_org_callback';
+  $items['myorg/manage']['page callback'] = 'my_custom_org_callback';
+}
+function my_custom_org_callback() {
+  $markup = '';
+  $developer_org = ibm_apim_get_current_developer_org();
+  
+  $_ibm_apim_invite_user_form = drupal_get_form('_ibm_apim_invite_user_form');
+
+  //$org = ibm_apim_get_current_developer_org();
+  //$markup .= '<div class="myorgLinks"><div class="myorgEditLink">' . l(t('Edit Organization'), 'myorg/edit') . '</div>';
+  $disallow_invitations = variable_get('ibm_apim_disallow_invitations', 0);
+  if ($disallow_invitations != 1) {
+    $markup .= '<div id="accordion"><div class="myorgAddUserLink"><h3>' . t('Add a user') . $image . '</h3>';
+    $markup .= '<div class="portalApi animateMaxHeight">' . drupal_render($_ibm_apim_invite_user_form) . '</div></div></div>';
+  }
+  
+  
+  
+  if (isset($developer_org)) {
+    $members = _ibm_apim_get_members($developer_org['id']);
+    if ($members) {
+      foreach ($members as $member) {
+        $user_form = drupal_get_form('_ibm_apim_myorg_user_form_' . $member['id'], $member, $developer_org['id']);
+		
+        $markup .= drupal_render($user_form);
+      }
+    }
+    drupal_set_title($developer_org['name']);
+  }
+  return array('#markup' => $markup);
+}
+/*function activation_redirect_preprocess__ibm_apim_myorg_user_form() {
+  $form = $variables['form'];
+  ///print '<pre>';
+  dsm($form, 'form');
+  $variables['role'] = render($form['displayroles']);
+  $variables['status'] = render($form['status']);
+  
+  
+  $variables['children'] = drupal_render_children($form);
+}*/
+function ibm_apim_stay_in_touch() {
+  $error = 0;
+  $msg = 'Success';
+  $fname = $_POST['fname'];
+  $lname = $_POST['lname'];
+  $email = $_POST['email'];
+  $confmail = $_POST['confmail'];
+  $company = $_POST['company'];
+  if(empty($email) || ($confmail != $email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    $error = 1;
+    $msg = 'Please check email & confirm email';
+  }
+
+  /*$to = 'ritesh.shah@citi.com, alexander.brooks@citi.com';
+  $cc = 'Sarma.Kasisomayajula@citi.com';
+  $bcc = 'rahul.polusani@citi.com, abdul1.rehman@citi.com';*/
+
+  $params = array('fname' => $fname, 'lname' => $lname, 'email' => $email, 'confmail' => $confmail, 'company' => $company);
+
+  if($error) {
+    echo drupal_json_output(array('error' => $error, 'msg' => $msg));
+  } else{
+    //original mail method, calls activation_redirect_mail
+    //drupal_mail('activation_redirect', 'stay_touch', $to, language_default(), $params);
+    
+    //$to  = 'mark.ross@citi.com, tucker.williams@razorfish.com, alexander.brooks@citi.com, rahul.polusani@citi.com';
+    $to = $email;
+    $subject = 'Citi Developer Hub | Sign Up';
+
+    $message = '<html><head><title>Citi Developer Hub | Sign Up</title></head><body style="margin: 0; padding: 0; min-width: 100%!important; font-size:10px; font-family: Arial, sans-serif, sans; color: #53565a;"><table width="100%" border="0" cellpadding="0" cellspacing="0"><tr><td><!--[if (gte mso 9)|(IE)]><table width="650" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]--><table style="width: 100%; max-width: 650px;" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td colspan="2"><img src="http://placehold.it/650x242" border="0" alt="Citi Developer Hub | Sign Up" style="display: block; margin-bottom:20px; max-width:100%;" /></td></tr><tr><td colspan="1" style="padding: 20px 0 20px 30px; width: 206px;"><img src="http://placehold.it/176x117" border="0" alt="" style="display: block; min-width:75px; max-width:100%;" /></td><td style="padding: 20px 30px 20px; vertical-align: top; max-width: 384px;" colspan="1"><strong style="display: block; color: #002d72; border-bottom: 1px solid #cccccc; padding-bottom: 8px; margin-bottom: 20px; font-size:11px; font-family: Arial, sans-serif, sans;">Dear '. $fname .',</strong><p style="margin: 0; font-size:10px; font-family: Arial, sans-serif, sans;">Thanks for your interest in Citi Developer Hub. We’ve received your request for sign-up and will get back to you shortly.</p></td></tr><tr><td style="padding: 30px;" colspan="2"><p style="margin: 0; font-size:10px; font-family: Arial, sans-serif, sans;">Thanks!</p><p style="margin: 0; font-size:10px; font-family: Arial, sans-serif, sans;">Citi Developer Team</p><img src="http://placehold.it/26x19" border="0" alt="" style="display: block; margin: 300px 0 5px auto; max-width:100%;" /><hr style="border: none; border-bottom: 1px #cccccc solid;" /></td></tr></table><!--[if (gte mso 9)|(IE)]></td></tr></table><![endif]--></td></tr></table></body></html>';
+
+    $headers  = 'MIME-Version: 1.0' . "\r\n";
+    $headers .= 'Content-type: text/html; charset=iso-8859-1' . "\r\n";
+
+    $headers .= 'To: Mark RF Ross<mark.ross@razorfish.com>' . "\r\n";
+    $headers .= 'From: Mark Citi Ross <mark.ross@citi.com>' . "\r\n";
+
+    mail($to, $subject, $message, $headers);
+    echo drupal_json_output(array('error' => $error, 'msg' => $msg));
+  }
+}
+
+function activation_redirect_mail($key, &$message, $params) {
+  //no longer being called as native php mail is being used over drupal_mail
+  if($key == 'stay_touch') {
+    $to = 'ritesh.shah@citi.com, alexander.brooks@citi.com, tucker.williams@razorfish.com';
+    $cc = 'Sarma.Kasisomayajula@citi.com';
+    $bcc = 'rahul.polusani@citi.com, abdul1.rehman@citi.com, tucker.williams@razorfish.com';
+    
+    $message['subject'] = t('Sign Up email notification');
+    $message['body'][] = t('<h1>tbr</h1>');
+    
+    /*$message['body'][] = t('This is a body text for stay in touch email');
+    $message['body'][] = t('First Name: @fname', array('@fname' => $params['fname']));
+    $message['body'][] = t('Last Name: @lname', array('@lname' => $params['lname']));
+    $message['body'][] = t('email: @email', array('@email' => $params['email']));
+    $message['body'][] = t('confmail: @confmail', array('@confmail' => $params['confmail']));
+    $message['body'][] = t('company: @company', array('@company' => $params['company']));*/
+    $message['headers'] = array('Bcc' => $bcc, 'Cc' => $cc);
+    //$message['headers']['Content-Type'] = 'text/html; charset=UTF-8; format=flowed; delsp=yes';
+    
+    /*$message['headers'] = array('Bcc' => 'rahul.polusani@citi.com', 'abdulmanit@gmail.com', 'Cc' => 'Sarma.Kasisomayajula@citi.com');*/
+  }
+}
+
+
+function ibm_apim_activate_success() {
+  return theme('activation_success');
+}
+
+function activation_redirect_theme(&$existing, $type, $theme, $path) {
+  $hooks['activation_success'] = array(
+    'template' => 'user-activation-success',
+	'variables' => array(),
+  );
+  $hooks['_ibm_apim_myorg_user_form'] = array(
+    'template' => 'myorg-box-form',
+    'render element' => 'form',
+  );
+  
+  $hooks['ibm_apim_profile'] = array(
+    'template' => 'ibm-apim-profile',
+    'variables' => array('form' => NULL),
+  );
+  
+  return $hooks;
+}
+function activation_redirect_form_alter(&$form, &$form_state, $form_id) {
+  if($form_id == 'ibm_apim_activate_create_account_form') {
+    $form['account']['name']['#attributes']['placeholder'] = t('User ID');
+    $form_state['redirect'] = 'ibm_apim/activate/success';
+    
+    
+    unset($form['account']['name']['#title']);
+    unset($form['account']['mail']['#title']);
+    unset($form['account']['name']['#description']);
+    unset($form['account']['mail']['#description']);
+    //unset($form['account']['pass']['#type']);
+    //dsm($form, 'form');
+    $form['field_first_name']['und'][0]['value']['#attributes']['placeholder'] = $form['field_first_name']['und'][0]['value']['#title'];		
+    unset($form['field_first_name']['und'][0]['value']['#description']);
+    unset($form['field_first_name']['und'][0]['value']['#title']);
+    
+    $form['field_last_name']['und'][0]['value']['#attributes']['placeholder'] = $form['field_last_name']['und'][0]['value']['#title'];		
+    unset($form['field_last_name']['und'][0]['value']['#description']);
+    unset($form['field_last_name']['und'][0]['value']['#title']);
+    unset($form['account']['pass']['#description']);
+    $form['field_first_name']['und'][0]['value']['#attributes']['class'][] = 'form-control one';
+    $form['field_last_name']['und'][0]['value']['#attributes']['class'][] = 'form-control one';
+    $form['account']['mail']['#attributes']['class'][] = 'form-control one';
+    $form['account']['name']['#attributes']['class'][] = 'form-control one';
+    unset($form['intro']);
+    $form['actions']['submit']['#value'] = t('Continue');
+    $form['actions']['submit']['#attributes']['class'][] = 'btn btn-info continue';  
+  }
+}
+
